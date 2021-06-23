@@ -3,14 +3,6 @@
 """
 CALculations CONtrol
 ====================
-    * sequence - the plan of calculations composed of steps
-    * step - atomic part of calculations taking as input / producing as output
-      intermediate results
-    * routine - a variant of implementation for a specific step; different
-      routines for a given step can be used interchangeably
-    * configuration - dictionary of parameters controlling the whole process 
-      of calculations, as well as parameters of specific routines
-          * each key (parameter's name) is str
 """
 import sys
 import os
