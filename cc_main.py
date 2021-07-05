@@ -7,16 +7,19 @@ CALculations CONtrol
 import sys
 import os
 import json
+import math
 from importlib import import_module
 from numpy import base_repr # for compacting hash string
 import hashlib
 from shutil import rmtree
 
 # Constants
-temp_step_fname = "_temp_step"
-"""Folder name where step results are stored before renaming to hash folder"""
+temp_step_folder = "_temp_step"
+"""Folder name where step results are stored before renaming to permanent"""
 step_config_fname = "_config"
-"""file name where step's config is stored"""
+"""File name where step's config is saved"""
+main_scope = "__main__"
+"""Default scope of routine functions"""
 dfl_r_init_fname = "_init_routines"
 """Default name of `.json` file listing routines` parameters"""
 dfl_step_name = "Main"
@@ -24,6 +27,8 @@ dfl_step_name = "Main"
 step_prefix = "$"
 """Prepended to a step name when it serves as a config. parameter name"""
 step_prefix_len = len(step_prefix)
+_system_prefix = "_"
+"""Prefix for system parameter names"""
 pname_seq = "_sequence"
 """Name of the parameter defining the calculations sequence"""
 pname_invar = "_invariant"
@@ -37,7 +42,7 @@ sys_params_set = {pname_seq,pname_invar}
 sys_params_hashed_set = {pname_seq}
 """Set of system parameter names which are included in hash"""
 return_stats_key = "_stats"
-"""Key name containing summary stats returned by routines"""
+"""Key name containing summary statistics returned by routines"""
 return_res_key = "_result"
 """Key name containing output returned by routines"""
 
@@ -57,10 +62,17 @@ def _list_val(arg):
         return []
     return next(iter(arg.values()))
 
-def _remove_ls_prefix(l,pref="_"):
+def _list2tuple(arg):
+    """
+    If the arg is a list, converts it to tuple, otherwise returns arg
+    """
+    if isinstance(arg,list):
+        return tuple(arg)
+    return arg
+def _remove_ls_prefix(l,pref=_system_prefix):
     """
     Given a list-like of strings, returns the list without strings 
-    starting with "_"
+    starting with the prefix, e.g. "_"
     """
     return [si for si in l if not si.startswith(pref)]
 def _param2stepname(param):
@@ -106,7 +118,14 @@ def _str2hash(string):
 ## Calculates hash for a given dict
 def _dict2hash(dct):
     return _str2hash(_dict2str(dct))
-
+## Given routine_name or (module_name,routine_name), returns the function
+def _hook(r_name):
+    if isinstance(r_name,str):
+        module = sys.modules[main_scope]
+    else:
+        module = sys.modules.get( r_name[0], import_module(r_name[0]) ) 
+        r_name = r_name[1]
+    return getattr(module, r_name)
 
 class calcon:
     """
@@ -155,8 +174,6 @@ class calcon:
     def __init__(self,
         calc_folder,
         routines_params = dfl_r_init_fname,
-        routines_package = None,
-        routines_module = "__main__",
         configs_subfolder = ""
             ):
         # Setting folders
@@ -164,60 +181,42 @@ class calcon:
         self._config_folder = os.path.join(
             self._calc_folder,configs_subfolder
             )
-        self._temp_folder = os.path.join(calc_folder,temp_step_fname)
+        self._temp_folder = os.path.join(calc_folder,temp_step_folder)
         # Reading routines parameters if needed
         if isinstance(routines_params,str):
             routines_params = self._read_json(routines_params)
-        # Dictionary of sets of routines' parameters
-        self._r_params = {
-            ki: set(_force_list(vi)) 
-                for ki,vi in routines_params.items() if
-                    not(ki.startswith("_"))
-            }
+        # Collecting dicts of sets of routines' parameters and cached info
+        self._r_params = {}
+        cached_info = {iname_cached:None,iname_non_cached:None}
+        for li in routines_params:
+            if isinstance(li,list):
+                self._r_params[_list2tuple(li[0])] = set(li[1:])
+            else:
+                cached_info.update(li)
         # Set of routines names
         self._r_names = set( self._r_params.keys() )
-        # Set information about routines caching
+        # Information about routines caching
         self._set_r_caching_info(
-            *[
-                routines_params.get(ki,None) 
-                    for ki in [iname_cached,iname_non_cached]
-                ]
+            cached_info[iname_cached], cached_info[iname_non_cached]
             )
         # Creating hooks for routines
-        if routines_package is not None:
-            self._r_modules_hooks(routines_package)
-        else:
-            self._r_objects_hooks(routines_module)
+        self._routines = {
+            ri: _hook(ri) for ri in self._r_names
+            }
 
     # Saving information about if routines are cached
     def _set_r_caching_info(self,l_cached,l_non_cached):
         if l_cached is not None:
-            self._r_caching = {ki:False for ki in self._r_names}
-            self._r_caching.update( {ki: True for ki in l_cached} )
+            self._r_caching = {_list2tuple(ki):False for ki in self._r_names}
+            self._r_caching.update(
+                {_list2tuple(ki): True for ki in l_cached}
+                )
         else:
-            self._r_caching = {ki:True for ki in self._r_names}
+            self._r_caching = {_list2tuple(ki):True for ki in self._r_names}
             if l_non_cached is not None:
-                self._r_caching.update( {ki: False for ki in l_non_cached} )
-    # Creating hooks for routines as modules (import if needed)
-    def _r_modules_hooks(self,package_name):
-        pkg_prefix = package_name+"." if package_name else ""
-        self._routines = {
-            ri: sys.modules.get(
-                    pkg_prefix+ri,
-                    import_module(pkg_prefix+ri)
-                    ) 
-                for ri in self._r_names
-            }
-    # Creating hooks for routines as module's objects (import if needed)
-    def _r_objects_hooks(self,module_name):
-        r_module = sys.module.get(
-            module_name,
-            import_module(module_name)
-            )
-        self._routines = {
-            ri: getattr(r_module,ri)()
-                for ri in self._r_names
-            }
+                self._r_caching.update(
+                    {_list2tuple(ki): False for ki in l_non_cached}
+                    )
 
     def _read_json(self, fname, subfolder=""):
         """
@@ -233,131 +232,182 @@ class calcon:
         with open(fname) as f:
             return json.load(f)
     
-    def _inclusion_list(self,step_name,lst):
+    def _inclusion_list(self,step_nr,lst):
         """
-        Recursively updates boolean list (which steps from self._seq should be
-        included, keeping all dependencies starting from the given step)
+        Recursively updates boolean list: True for given step and ancestors
         """
-        lst[self._s_nrs[step_name]] = True
-        for si in self._s_parent[step_name]:
+        lst[step_nr] = True
+        for si in self._seq[step_nr]:
             self._inclusion_list(si,lst)
-    def _subsequence(self,nr):
+    def _subsequence(self,step_nr):
         """
-        Given step nr in `self._seq`, returns subsequence of 
-        `self._seq` up to the nr, including only the step and all its 
-        dependencies at all levels, keeping the original order 
+        Given step nr in `self._seq`, returns subsequence of `self._seq` 
+        up to the nr, including only the step and its ancestors,
+        keeping the original order 
         """
-        incl_list = [False for _ in range(nr+1)]
-        self._inclusion_list(_str_key(self._seq[nr]),incl_list)
+        incl_list = [False for _ in range(step_nr)]
+        self._inclusion_list(step_nr,incl_list)
         return [di for di,qi in zip(self._seq,incl_list) if qi]
-    def _get_step_params(self,step):
+    def _get_step_params(self,step_nr):
         """
-        Given step name, returns the set of its routine's parameters
+        Given step number, returns the set of its routine's parameters
         """
-        return getattr(
-            self._r_params, self._s_routine[step], set()
-            )
+        return self._r_params[ self._s_routine[step_nr] ]
+    
     def load_config(self,config):
         """
         Given master configuration as `dict` or `str` (config. file name),
-        checks its consistency and prepares calculations plan.
+        checks its consistency and prepares calculation plan.
         """
         if isinstance(config,str):
             config = self._read_json(config)
         invar_set = set(config.get(pname_invar,[]))
-        # The calculations plan (by default, has one step "Main")
-        self._seq = config.get(pname_seq, [dfl_step_name])
-        # Dictionaries containing various information for each step
-        self._s_config = {} # Step's full configuration
-        self._s_params = {} # Step's param. names including dependencies
-        self._s_hash_params = {} # Param. names used in step's hashing
-        self._s_nrs = {} # Nr of step in master sequence
-        self._s_parent = {} # List of steps the step depends on
-        self._s_seq = {} # Step's subsequence
-        self._s_routine = {} # Step's routine name
-        self._s_if_cached = {} # If step is cached (boolean)
-        self._s_cached_folder = {} # Cached folder name if exists
-        for i,ist in enumerate(self._seq): # ist is calculations step (#i)
-            step_name = _str_key(ist)
-            self._s_nrs[step_name] = i
-            self._s_parent[step_name] = s_parent = _list_val(ist)
-            self._s_seq[step_name] = subseq = self._subsequence(i)
-            self._s_routine[step_name] = config[step_prefix+step_name]
-            self._s_params[step_name] = s_params = set.union(
+        ## The calculations plan and steps names 
+        # (by default, has one step "Main")
+        seq_str = config.get(pname_seq, [dfl_step_name])
+        # List of step names in the order of the sequence
+        self._s_names = [_str_key(si) for si in seq_str]
+        self._n = n = len(seq_str) # The number of steps
+        if self._n > (set(self._s_names)):
+            raise Exception(
+                "All steps in the sequence should have different names"
+                )
+        # Dict "step_name": step_nr
+        self._s_nrs = {si:ni for ni,si in enumerate(self._s_names)}
+        # The main sequence as a list, where #element = #step,
+        # element = list of parent #steps
+        self._seq = [
+            [ self._s_nrs[sj] for sj in _list_val(si) ]
+                    for si in seq_str
+            ]
+        ## Lists containing various information for each step
+        # Step's full configuration
+        self._s_config = [ {} for _ in range(n) ]
+        # Step's and ancestors' routine param. names
+        self._s_params = [set() for _ in range(n)] 
+        # Param. names used in step's hashing
+        self._s_hash_params = [set() for _ in range(n)]
+        # Step's subsequence in str form
+        self._s_seq = [[] for _ in range(n)]
+        # Step's routine name
+        self._s_routine = ["" for _ in range(n)]
+        # If step is cached (boolean)
+        self._s_if_cached = [True for _ in range(n)]
+        # Cached folder name if exists
+        self._s_cached_folder = [None for _ in range(n)]
+        for i,isp in enumerate(self._seq): # isp is parents of step (#i)
+            step_name = self._s_names[i]
+            # Creating supplementary step information
+            self._s_seq[i] = subseq = self._subsequence(i)
+            self._s_routine[i] = s_routine = _list2tuple(
+                config[step_prefix+step_name]
+                )
+            self._s_if_cached[i] = s_if_cached = self._r_caching[s_routine]
+            self._s_params[i] = s_params = set.union(
                 set([step_prefix+step_name]),
-                    *[self._get_params(_str_key(si)) for si in s_parent]
+                self._r_params[s_routine],
+                *[self._s_params[j] for j in isp]
                 )
-            self._s_invar = s_invar = invar_set.intersect(
-                s_params,sys_params_hashed_set
+            self._s_invar[i] = s_invar = invar_set & (
+                s_params | sys_params_hashed_set
                 )
-            self._s_hash_params[step_name] = s_params.union(
-                sys_params_hashed_set
-                    ).difference(invar_set)
-            self._s_config[step_name] = s_config = {
+            self._s_hash_params[i] = s_hash_params = (
+                s_params | sys_params_hashed_set
+                ) - invar_set
+            # Creating step's configuration
+            self._s_config[i] = s_config = {
                 config[ki] for ki in s_params
                 }
-            self._s_config[step_name][pname_seq] = subseq
+            s_config[pname_seq] = subseq
             if len(s_invar) > 0:
-                self._s_config[step_name][pname_invar] = sorted(list(s_invar))
-            self._s_cached_folder[step_name] = _dict2hash(s_config)
+                s_config[pname_invar] = sorted(list(s_invar))
+            # Cached folder name
+            if s_if_cached:
+                self._s_cached_folder[step_name] = _dict2hash(
+                        {
+                        ki:vi for ki,vi in s_config.items()
+                            if ki in s_hash_params
+                        }
+                    )
     # Prepares a new temp folder for step calculation with step's config file
-    def _make_step_folder(self,s_name):
+    def _make_step_folder(self,s_nr):
         if os.path.exists(self._temp_folder):
             rmtree(self._temp_folder)
         os.mkdir(self._temp_folder)
         with open(
             _fn_normalize(step_config_fname,self._temp_folder,"json"),"w"
                 ) as f:
-            json.dump(self.s_config[s_name],f)
+            json.dump(self.s_config[s_nr],f)
     # After step's calculation ends successfuly, renames the temp folder to
     # its intended name
-    def _checkin_step_folder(self,s_name):
-        cached = os.path.join(self._calc_folder,self._s_cached_folder[s_name])
+    def _checkin_step_folder(self,s_nr):
+        cached = os.path.join(self._calc_folder,self._s_cached_folder[s_nr])
         if os.path.exists(cached):
             rmtree(cached)
         os.path.rename(self._temp_folder,cached)
         
-    def run_step(self,s_name):
+    def run_step(self,s_nr):
         """
         Perform calculation of the given step. 
         Returns False if calculation was successful, 
         otherwise returns error information (yielding True)
         """
-        q_cached = self._s_if_cached[s_name]
-        args = [self._s_res[si] for si in self._s_parent]
+        q_cached = self._s_if_cached[s_nr]
+        args = [self._s_res[si] for si in self._seq[s_nr]]
         if q_cached:
-            self._make_temp_folder(s_name)
+            self._make_step_folder(s_nr)
             args.append(self._temp_folder)
-        args.append(self._s_sonfig[s_name])
+        args.append(self._s_sonfig[s_nr])
         try:
-            val = self._routine(*args)
+            val = self._routines[self._s_routine[s_nr]](*args)
         except:
             return True
         if q_cached:
-            self._stats[s_name] = val
-            self._res[s_name] = os.path.join(
-                self._calc_folder,self._s_cached_folder[s_name]
+            self._stats[s_nr] = val
+            self._res[s_nr] = os.path.join(
+                self._calc_folder,self._s_cached_folder[s_nr]
                 )
+            self._checkin_step_folder(s_nr)
         else:
             if isinstance(val,dict) and return_stats_key in val:
-                self._stats[s_name] = val[return_stats_key]
-                self._res[s_name] = val.get(return_res_key,None)
+                self._stats[s_nr] = val[return_stats_key]
+                self._res[s_nr] = val.get(return_res_key,None)
             else:
-                self._stats[s_name] = None
-                self._res[s_name] = val
+                self._stats[s_nr] = None
+                self._res[s_nr] = val
         return False
     
-    def run_calcs(self):
+    def run_calc(self):
         """
         Runs the calculations, provided that configuration was already loaded
         """
         # Initialize the collections of results and summary statistics
-        self._res = {}
-        self._stats = {}
-        for si in self._seq:
-            err = self.run_step(_str_key(si))
+        self._res = [None for _ in range(self._n)]
+        self._stats = [None for _ in range(self._n)]
+        for si in range(self._n):
+            err = self.run_step(si)
             if err:
-                print("Error in step",si)
+                print(f"Error in step {si} ({self._s_names[si]})")
+                return si
                 break
-
+        return -1
+    
+    def get_stats(self,numbering=True):
+        """
+        Returns summary stats collected as a result of calculation as a dict
+        where keys are step names.
+        If numbering=True, steps' numbers are added in front of names.
         
+        """
+        n_digits = math.ceil(math.log(self._n+1),10)
+        stats={}
+        for i,si in enumerate(self._stats):
+            if si is not None:
+                s_name = self._s_names[i]
+                if numbering:
+                    s_name = str(i).zfill(n_digits) + s_name
+                stats[s_name] = si
+        return stats
+    
+    def get_result(self):
+        return self._res.copy()
