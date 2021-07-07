@@ -1,15 +1,16 @@
-﻿# Configuration of calculations
+# Configuration of calculations
 ## General concepts
-* **project** - a series of calculations based on a given set of routines where each calculation is defined by a configuration
-* **configuration** - dictionary of parameters defining a calculation in the framework of a project, including the selection of routines and the parameters of each routine
-* **step** - atomic part of calculation, which is implemented by one of the given routines  
+
+* **project** - a series of calculations based on a given set of routines, where each run of calculation (**calculation** for short) is defined by a configuration
+* **configuration** - dictionary of parameters or a *.json* file defining a calculation in the framework of a project, including the selection of routines and the parameters of each routine
+* **step** - atomic part of calculation, which is implemented by one of the given routines
+	* besides actual calculations, there may be other types of steps such as *data acquisition*, *data preparation* or *summarizing the results*  
 * **sequence** - as a part of configuration, the plan of calculation composed of steps
 	* includes the optional information about dependencies between steps, where output of **parent** steps are inputs of the **child** step 
 	* in general, can be represented as an oriented graph without cycles, where nodes are steps and edges are dependencies between steps
 	* **subsequence** - for a given step, a part of the sequence including only this step and all its **ancestors** (parents, their parents. etc.)
 * **routine** - a method / variant of implementation of a specific step
-	* all routines are implemented outside of `calconpy` in one of to forms, which is chosen for the project: modules of a specified package or classes of a specified module
-		* the module/class name serves as the routine name in the configuration
+	* all routines are implemented outside of `calconpy` as functions, which are defined in the calling script or specified modules
 	* different routines implementing a same step should have the same API, ensuring the interchangeability in different configurations
 	* a good practice (for conducting a series of experiments or configuring the calculation in production) is to fix the sequence of steps and only change routines for specific steps if needed
   
@@ -32,7 +33,9 @@ There are three kinds of parameters in a configuration
 	* can have any names, which should not start with _ or $
 	* multiple routines may have common parameters
 	* if there are many parameters specific to different routines, a good practice is to name them *"routine_name.parameter_name"* 
-* *Routine selection parameters* - define for each step of the sequence, which routine implements it, in the format *"$step_name": "routine_name"*
+* *Routine selection parameters* - define for each step of the sequence, which routine implements it, in either of the following formats:
+	* *"$step_name": "routine_name"* - when "routine_name" is the name of the function defined in the main scope
+	* *"$step_name": ["module_name", "routine_name"]* - when "routine_name" is the name of the function defined in the module "module_name"
 * *System parameters* - related to organizing the process of calculation
 	* Have predefined names, which start with _
 
@@ -101,12 +104,17 @@ There are following options:
 2. any other value – the routine's output
  
 ## Initialization of the project
-Initialization of the project means the definition of all routines which can be used in calculations. The definition is given as a `dict` or *.json* file containing the following:
-* *"routine_name": [list of routine's parameter names]* or *"routine_name":"parameter_name"*
-* *"_cached": [list of names of cached routines]* OR
-* *"_non_cached": [list of names of non-cached routines]*
+Initialization of the project means the definition of all routines which can be used in calculations. The definition includes the following information about each routine: name of the function (and optionally, the module) implementing it; list of names of all configuration parameters influencing the routine; whether the routine is cached. 
 
-The *"_cached"* and *"_non_cached"* keys are optional:
+The initialization should be provided as a `list` or a *.json* file with elements of the following kinds:
+* `list` where the first element indicates a routine and the rest of elements are names of its parameters (if any) 
+	* the first element is either *"routine_name"* or *["module_name", "routine_name"]* where "routine_name" is the name of the function, and "module_name" is the name of the module if the function is a part of it
+* *{"_cached": [list of cached routines]}*
+* *{"_non_cached": [list of non-cached routines]}*
+
+The *"_cached"* and *"_non_cached"* dictionaries are optional:
 * if none of them presents, all the routines are considered as cached;
-* if *"_cached"* is given, then only the listed routines are cached, and *"_non_cached"* is ignored (if present)
-* if only *"_non_cached"* key is given, then all the routines except the listed ones are considered cached
+* if *"_cached"* is given, then only the listed routines are cached, and *"_non_cached"* is ignored (even if present)
+* if only *"_non_cached"* dictionary is given, then all the routines except the listed ones are considered cached
+
+During the initialization, all the modules containing the routines are imported.
