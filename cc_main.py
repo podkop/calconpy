@@ -8,6 +8,7 @@ import sys
 import os
 import json
 import math
+import time
 from importlib import import_module
 from numpy import base_repr # for compacting hash string
 import hashlib
@@ -18,6 +19,8 @@ temp_step_folder = "_temp_step"
 """Folder name where step results are stored before renaming to permanent"""
 step_config_fname = "_config"
 """File name where step's config is saved"""
+step_stats_fname = "_stats"
+"""File name where step's statistics is saved in the cached folder"""
 main_scope = "__main__"
 """Default scope of routine functions"""
 dfl_r_init_fname = "_init_routines"
@@ -60,7 +63,7 @@ def _list_val(arg):
     """
     if isinstance(arg,str):
         return []
-    return next(iter(arg.values()))
+    return _force_list(next(iter(arg.values())))
 
 def _list2tuple(arg):
     """
@@ -178,9 +181,7 @@ class calcon:
             ):
         # Setting folders
         self._calc_folder = calc_folder
-        self._config_folder = os.path.join(
-            self._calc_folder,configs_subfolder
-            )
+        self._conf_subfolder = configs_subfolder
         self._temp_folder = os.path.join(calc_folder,temp_step_folder)
         # Reading routines parameters if needed
         if isinstance(routines_params,str):
@@ -226,7 +227,7 @@ class calcon:
         """
         fname = _fn_normalize(
             fname,
-            os.path.join(self.calc_folder,subfolder),
+            os.path.join(self._calc_folder,subfolder),
             ".json"
             )
         with open(fname) as f:
@@ -245,9 +246,13 @@ class calcon:
         up to the nr, including only the step and its ancestors,
         keeping the original order 
         """
-        incl_list = [False for _ in range(step_nr)]
+        incl_list = [False for _ in range(step_nr+1)]
         self._inclusion_list(step_nr,incl_list)
-        return [di for di,qi in zip(self._seq,incl_list) if qi]
+        return [
+            self._s_names[i] if len(di) == 0 else
+            {self._s_names[i]: [self._s_names[j] for j in di]}
+            for i, (di,qi) in enumerate(zip(self._seq,incl_list)) if qi
+            ]
     def _get_step_params(self,step_nr):
         """
         Given step number, returns the set of its routine's parameters
@@ -260,7 +265,7 @@ class calcon:
         checks its consistency and prepares calculation plan.
         """
         if isinstance(config,str):
-            config = self._read_json(config)
+            config = self._read_json(config,self._conf_subfolder)
         invar_set = set(config.get(pname_invar,[]))
         ## The calculations plan and steps names 
         # (by default, has one step "Main")
@@ -268,7 +273,7 @@ class calcon:
         # List of step names in the order of the sequence
         self._s_names = [_str_key(si) for si in seq_str]
         self._n = n = len(seq_str) # The number of steps
-        if self._n > (set(self._s_names)):
+        if self._n > len(set(self._s_names)):
             raise Exception(
                 "All steps in the sequence should have different names"
                 )
@@ -285,6 +290,8 @@ class calcon:
         self._s_config = [ {} for _ in range(n) ]
         # Step's and ancestors' routine param. names
         self._s_params = [set() for _ in range(n)] 
+        # Invariant parameters among step's and ancestors' routine params
+        self._s_invar = [set() for _ in range(n)] 
         # Param. names used in step's hashing
         self._s_hash_params = [set() for _ in range(n)]
         # Step's subsequence in str form
@@ -293,8 +300,9 @@ class calcon:
         self._s_routine = ["" for _ in range(n)]
         # If step is cached (boolean)
         self._s_if_cached = [True for _ in range(n)]
-        # Cached folder name if exists
+        # Cached folder name / full path if exists
         self._s_cached_folder = [None for _ in range(n)]
+        self._s_cached_path = [None for _ in range(n)]
         for i,isp in enumerate(self._seq): # isp is parents of step (#i)
             step_name = self._s_names[i]
             # Creating supplementary step information
@@ -316,19 +324,20 @@ class calcon:
                 ) - invar_set
             # Creating step's configuration
             self._s_config[i] = s_config = {
-                config[ki] for ki in s_params
+                ki:config[ki] for ki in s_params
                 }
             s_config[pname_seq] = subseq
             if len(s_invar) > 0:
                 s_config[pname_invar] = sorted(list(s_invar))
             # Cached folder name
             if s_if_cached:
-                self._s_cached_folder[step_name] = _dict2hash(
+                self._s_cached_folder[i] = cached = _dict2hash(
                         {
                         ki:vi for ki,vi in s_config.items()
                             if ki in s_hash_params
                         }
                     )
+                self._s_cached_path[i] = os.path.join(self._calc_folder,cached)
     # Prepares a new temp folder for step calculation with step's config file
     def _make_step_folder(self,s_nr):
         if os.path.exists(self._temp_folder):
@@ -337,15 +346,35 @@ class calcon:
         with open(
             _fn_normalize(step_config_fname,self._temp_folder,"json"),"w"
                 ) as f:
-            json.dump(self.s_config[s_nr],f)
+            json.dump(self._s_config[s_nr],f)
     # After step's calculation ends successfuly, renames the temp folder to
     # its intended name
     def _checkin_step_folder(self,s_nr):
-        cached = os.path.join(self._calc_folder,self._s_cached_folder[s_nr])
-        if os.path.exists(cached):
-            rmtree(cached)
-        os.path.rename(self._temp_folder,cached)
-        
+        if os.path.exists(self._s_cached_path[s_nr]):
+            rmtree(self._s_cached_path[s_nr])
+        os.rename(self._temp_folder,self._s_cached_path[s_nr])
+    # Check if there is a cached folder for the given step nr.
+    # If yes, collects the saved stats, sets rezult as folder name
+    #   and returns True, otherwise False
+    def _try_step_folder(self,s_nr):
+        if os.path.exists(self._s_cached_path[s_nr]):
+            self._stats[s_nr] = self._read_json(
+                step_stats_fname,self._s_cached_folder[s_nr]
+                )
+            self._res[s_nr] = self._s_cached_path[s_nr]
+            return True
+        return False
+    # Saves summary statistics of the given step to the cache folder
+    def _save_stats_json(self,s_nr):
+        with open(
+                os.path.join(
+                    self._s_cached_path[s_nr],
+                    step_stats_fname
+                    )+".json",
+                "w"
+                ) as f:
+            json.dump(self._stats[s_nr],f)
+            
     def run_step(self,s_nr):
         """
         Perform calculation of the given step. 
@@ -353,28 +382,33 @@ class calcon:
         otherwise returns error information (yielding True)
         """
         q_cached = self._s_if_cached[s_nr]
-        args = [self._s_res[si] for si in self._seq[s_nr]]
+        if q_cached and self._try_step_folder(s_nr):
+            return False
+        args = [self._res[si] for si in self._seq[s_nr]]
         if q_cached:
             self._make_step_folder(s_nr)
             args.append(self._temp_folder)
-        args.append(self._s_sonfig[s_nr])
+        args.append(self._s_config[s_nr])
+        _time = time.process_time()
         try:
             val = self._routines[self._s_routine[s_nr]](*args)
-        except:
-            return True
+        except Exception as exc:
+            return exc
+        _time = time.process_time() - _time
         if q_cached:
-            self._stats[s_nr] = val
-            self._res[s_nr] = os.path.join(
-                self._calc_folder,self._s_cached_folder[s_nr]
-                )
+            self._res[s_nr] = self._s_cached_path[s_nr]
+            self._stats[s_nr] = val.copy() if val is not None else {}
+            self._stats[s_nr]["_time"] = _time
             self._checkin_step_folder(s_nr)
+            self._save_stats_json(s_nr)
         else:
             if isinstance(val,dict) and return_stats_key in val:
-                self._stats[s_nr] = val[return_stats_key]
                 self._res[s_nr] = val.get(return_res_key,None)
+                self._stats[s_nr] = val[return_stats_key].copy()
             else:
-                self._stats[s_nr] = None
                 self._res[s_nr] = val
+                self._stats[s_nr] = {}
+            self._stats[s_nr]["_time"] = _time
         return False
     
     def run_calc(self):
@@ -388,7 +422,7 @@ class calcon:
             err = self.run_step(si)
             if err:
                 print(f"Error in step {si} ({self._s_names[si]})")
-                return si
+                return [si,err]
                 break
         return -1
     
@@ -411,3 +445,8 @@ class calcon:
     
     def get_result(self):
         return self._res.copy()
+
+if __name__=="__main__":
+    C = calcon("/home/dp/dmsales_calc",configs_subfolder = "_configs")
+    C.load_config("moda_basic")
+    e=C.run_calc()
