@@ -445,8 +445,3 @@ class calcon:
     
     def get_result(self):
         return self._res.copy()
-
-if __name__=="__main__":
-    C = calcon("/home/dp/dmsales_calc",configs_subfolder = "_configs")
-    C.load_config("moda_basic")
-    e=C.run_calc()
