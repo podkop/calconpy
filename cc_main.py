@@ -36,18 +36,24 @@ pname_seq = "_sequence"
 """Name of the parameter defining the calculations sequence"""
 pname_invar = "_invariant"
 """Name of parameter defining invariant-caching parameters"""
+pname_timed, pname_nontimed = ["_timed","_non_timed"]
+"""Names of parameters controlling which steps should be timed"""
 iname_cached = "_cached"
 """Name of init. parameter defining which routines are cached"""
 iname_non_cached = "_noncached"
 """Name of init. parameter defining which routines are NOT cached"""
-sys_params_set = {pname_seq,pname_invar}
-"""Set of system parameter names"""
-sys_params_hashed_set = {pname_seq}
+
+# sys_params_set = {pname_seq,pname_invar,pname_timed,pname_nontimed}
+# """Set of system parameter names"""
+sys_params_hashed_set = {pname_seq,pname_timed}
 """Set of system parameter names which are included in hash"""
+
 return_stats_key = "_stats"
 """Key name containing summary statistics returned by routines"""
 return_res_key = "_result"
 """Key name containing output returned by routines"""
+stats_timing_key = "_time"
+
 
 def _str_key(arg):
     """
@@ -107,6 +113,29 @@ def _force_list(arg):
 def _dict2str(dct):
     return json.dumps(dct,sort_keys=True)
 
+# Given dct as dict or None; add_dct as dict or None:
+#    safely updates dct with add_dct
+#    returns the resulted dict or None if the result is empty
+def _nonempty_dict(dct,add_dct):
+    dct = {} if dct is None else dct.copy()
+    add_dct = {} if add_dct is None else add_dct.copy()
+    dct.update(add_dct)
+    return None if len(dct) == 0 else dct
+
+# Given l as a list-like, l_yes and l_no as list-like containing l's elements
+# or None, creates {e:bool for each e in l} according to the rules:
+#   - if l_yes is not None, only elements from l_yes are True;
+#   - if l_yes is None, l_no is not None, only elements from l_no are False
+#   - if both l_yes and l_no are None, all the elements are True
+def _yes_no_dict(l,l_yes,l_no):
+    if l_yes is not None:
+        dct = {ki:False for ki in l}
+        dct.update({ki: True for ki in l_yes})
+    else:
+        dct = {ki:True for ki in l}
+        dct.update({ki: False for ki in l_no})
+    return dct
+
 ## Calculates unique hash for a string, returns str
 def _str2hash(string):
     return base_repr(
@@ -121,14 +150,16 @@ def _str2hash(string):
 ## Calculates hash for a given dict
 def _dict2hash(dct):
     return _str2hash(_dict2str(dct))
-## Given routine_name or (module_name,routine_name), returns the function
+
+## Given "routine_name" or "module_name.routine_name", returns the function
 def _hook(r_name):
-    if isinstance(r_name,str):
+    l = r_name.rsplit(".",1)
+    func_name = l[-1]
+    if len(l)==1:
         module = sys.modules[main_scope]
     else:
-        module = sys.modules.get( r_name[0], import_module(r_name[0]) ) 
-        r_name = r_name[1]
-    return getattr(module, r_name)
+        module = sys.modules.get( l[0], import_module(l[0]) ) 
+    return getattr(module, func_name)
 
 class calcon:
     """
@@ -192,32 +223,22 @@ class calcon:
         for li in routines_params:
             if isinstance(li,list):
                 self._r_params[_list2tuple(li[0])] = set(li[1:])
+                # _list2tuple is applied to routine names for non-implemented
+                # functionality, when a routine name may be given as 
+                # ["module.object_name","method_name"]
             else:
                 cached_info.update(li)
         # Set of routines names
         self._r_names = set( self._r_params.keys() )
         # Information about routines caching
-        self._set_r_caching_info(
+        self._r_caching = _yes_no_dict(
+            self._r_names, 
             cached_info[iname_cached], cached_info[iname_non_cached]
             )
         # Creating hooks for routines
         self._routines = {
             ri: _hook(ri) for ri in self._r_names
             }
-
-    # Saving information about if routines are cached
-    def _set_r_caching_info(self,l_cached,l_non_cached):
-        if l_cached is not None:
-            self._r_caching = {_list2tuple(ki):False for ki in self._r_names}
-            self._r_caching.update(
-                {_list2tuple(ki): True for ki in l_cached}
-                )
-        else:
-            self._r_caching = {_list2tuple(ki):True for ki in self._r_names}
-            if l_non_cached is not None:
-                self._r_caching.update(
-                    {_list2tuple(ki): False for ki in l_non_cached}
-                    )
 
     def _read_json(self, fname, subfolder=""):
         """
@@ -272,7 +293,9 @@ class calcon:
         seq_str = config.get(pname_seq, [dfl_step_name])
         # List of step names in the order of the sequence
         self._s_names = [_str_key(si) for si in seq_str]
-        self._n = n = len(seq_str) # The number of steps
+        # The number of steps
+        self._n = n = len(seq_str)
+        # Consistency check: all steps names should be different
         if self._n > len(set(self._s_names)):
             raise Exception(
                 "All steps in the sequence should have different names"
@@ -280,15 +303,29 @@ class calcon:
         # Dict "step_name": step_nr
         self._s_nrs = {si:ni for ni,si in enumerate(self._s_names)}
         # The main sequence as a list, where #element = #step,
-        # element = list of parent #steps
+        #   element = list of parent #steps
         self._seq = [
             [ self._s_nrs[sj] for sj in _list_val(si) ]
                     for si in seq_str
             ]
+        # Consistency check: each step should go after its ancestors
+        for i, li in enumerate(self._seq):
+            if len(li)>0 and max(li)>=i:
+                raise Exception(
+                "Each step should go after its ancestors, not like",
+                    seq_str[i]
+                )
+        # Information which steps should be timed
+        if_timed_dct = _yes_no_dict(
+            self._s_names,
+            config.get(pname_timed,None),
+            config.get(pname_nontimed,None)
+            )
+        self._s_if_timed = [if_timed_dct[ki] for ki in self._s_names]
         ## Lists containing various information for each step
         # Step's full configuration
         self._s_config = [ {} for _ in range(n) ]
-        # Step's and ancestors' routine param. names
+        # Step's and ancestors' routine param. names, including $-params
         self._s_params = [set() for _ in range(n)] 
         # Invariant parameters among step's and ancestors' routine params
         self._s_invar = [set() for _ in range(n)] 
@@ -329,6 +366,7 @@ class calcon:
             s_config[pname_seq] = subseq
             if len(s_invar) > 0:
                 s_config[pname_invar] = sorted(list(s_invar))
+            s_config[pname_timed] = self._s_if_timed[i]
             # Cached folder name
             if s_if_cached:
                 self._s_cached_folder[i] = cached = _dict2hash(
@@ -382,6 +420,8 @@ class calcon:
         otherwise returns error information (yielding True)
         """
         q_cached = self._s_if_cached[s_nr]
+        q_timed = self._s_if_timed[s_nr]
+        stats_internal = {} # addition to statistics
         if q_cached and self._try_step_folder(s_nr):
             return False
         args = [self._res[si] for si in self._seq[s_nr]]
@@ -389,26 +429,29 @@ class calcon:
             self._make_step_folder(s_nr)
             args.append(self._temp_folder)
         args.append(self._s_config[s_nr])
-        _time = time.process_time()
+        if q_timed:
+            _time = time.process_time()
         try:
             val = self._routines[self._s_routine[s_nr]](*args)
         except Exception as exc:
             return exc
-        _time = time.process_time() - _time
+        if q_timed:
+            _time = time.process_time() - _time
+            stats_internal[stats_timing_key] = _time
         if q_cached:
             self._res[s_nr] = self._s_cached_path[s_nr]
-            self._stats[s_nr] = val.copy() if val is not None else {}
-            self._stats[s_nr]["_time"] = _time
+            self._stats[s_nr] = _nonempty_dict(val,stats_internal)
             self._checkin_step_folder(s_nr)
             self._save_stats_json(s_nr)
         else:
             if isinstance(val,dict) and return_stats_key in val:
                 self._res[s_nr] = val.get(return_res_key,None)
-                self._stats[s_nr] = val[return_stats_key].copy()
+                self._stats[s_nr] = _nonempty_dict(
+                    val[return_stats_key], stats_internal
+                    )
             else:
                 self._res[s_nr] = val
-                self._stats[s_nr] = {}
-            self._stats[s_nr]["_time"] = _time
+                self._stats[s_nr] = _nonempty_dict({},stats_internal)
         return False
     
     def run_calc(self):
@@ -433,13 +476,13 @@ class calcon:
         If numbering=True, steps' numbers are added in front of names.
         
         """
-        n_digits = math.ceil(math.log(self._n+1),10)
+        n_digits = math.ceil(math.log(self._n+1,10))
         stats={}
         for i,si in enumerate(self._stats):
             if si is not None:
                 s_name = self._s_names[i]
                 if numbering:
-                    s_name = str(i).zfill(n_digits) + s_name
+                    s_name = f"({str(i).zfill(n_digits)}) {s_name}"
                 stats[s_name] = si
         return stats
     
