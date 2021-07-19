@@ -287,7 +287,6 @@ class calcon:
         """
         if isinstance(config,str):
             config = self._read_json(config,self._conf_subfolder)
-        invar_set = set(config.get(pname_invar,[]))
         ## The calculations plan and steps names 
         # (by default, has one step "Main")
         seq_str = config.get(pname_seq, [dfl_step_name])
@@ -295,6 +294,9 @@ class calcon:
         self._s_names = [_str_key(si) for si in seq_str]
         # The number of steps
         self._n = n = len(seq_str)
+        # Initialize the collections of results and summary statistics
+        self._res = [None for _ in range(self._n)]
+        self._stats = [None for _ in range(self._n)]
         # Consistency check: all steps names should be different
         if self._n > len(set(self._s_names)):
             raise Exception(
@@ -340,6 +342,8 @@ class calcon:
         # Cached folder name / full path if exists
         self._s_cached_folder = [None for _ in range(n)]
         self._s_cached_path = [None for _ in range(n)]
+        # Shortening for invariant set
+        invar_set = set(config.get(pname_invar,[]))
         for i,isp in enumerate(self._seq): # isp is parents of step (#i)
             step_name = self._s_names[i]
             # Creating supplementary step information
@@ -361,7 +365,7 @@ class calcon:
                 ) - invar_set
             # Creating step's configuration
             self._s_config[i] = s_config = {
-                ki:config[ki] for ki in s_params
+                ki:config.get(ki,None) for ki in s_params
                 }
             s_config[pname_seq] = subseq
             if len(s_invar) > 0:
@@ -458,9 +462,6 @@ class calcon:
         """
         Runs the calculations, provided that configuration was already loaded
         """
-        # Initialize the collections of results and summary statistics
-        self._res = [None for _ in range(self._n)]
-        self._stats = [None for _ in range(self._n)]
         for si in range(self._n):
             err = self.run_step(si)
             if err:

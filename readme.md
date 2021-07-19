@@ -34,8 +34,10 @@ There are three kinds of parameters in a configuration
 * *Routines' parameters* – influencing calculation in specific routines
 	* can have any names, which should not start with _ or $
 	* multiple routines may have common parameters
-	* if there are many parameters specific to different routines, a good practice is to name them *"routine_name.parameter_name"* 
-* *Routine selection parameters* (or *\$-parameters*) – define for each step of the sequence, which routine implements it, in the format *"\$step_name": "routine_name"*
+	* the set of parameters influencing each routine is defined during the initialization; it is required for creating step configurations
+	* a tip: if Python naming conventions are followed in routine names, then configurations can be easily created from `**kwargs` in custom APIs; 
+	* if there are many parameters specific to different routines, a good practice is to name them *"rn_pn"* where *rn* = routine name, *pn* = parameter name 
+* *Routine selection parameters* (or *\$-parameters*) – define for each step of the sequence, which routine implements it, in the format *"\$step_name": "routine_name"*.
 	Here *"routine_name"* points to the function implementing the routine:
 	* if *"routine_name"* does not contain a dot, then it is interpreted as the name of the function defined in the main scope (e.g. "\_\_main\_\_.routine\_name")
 	* if *"routine_name"* contains one or more dots, then the part before the last dot is interpreted as the module name and the rest as the function name defined in that module
@@ -104,7 +106,8 @@ Cached routines are ones that save the results of calculations to a folder; non-
 	* if the *i*-th parent routine is cached, then `p_i` is the name of the corresponding cache folder as `str` (otherwise `p_i` is the value returned by the parent routine)
 * `folder_name` – the folder name to save output to, if the routine is cached (otherwise, the argument `folder_name` is missing)  
 * `config` – the corresponding step's configuration (`dict`)
-	* note that besides parameters listed as routine's parameters during the initialization, `config` contains also 
+	* parameters defined for the routine selected for the step, which are absent in the master configuration, are set to `None` in steps' configuration
+	* note that besides parameters listed as routine's parameters during the initialization, `config` contains also routine selection parameters (for the step and ancestors) and internal parameters
 
 If the routine is not cached and has no parents, it has `config` as the only argument.
 
@@ -129,7 +132,7 @@ Initialization of the project means the definition of all routines which can be 
 
 The initialization should be provided as a `list` or a *.json* file with elements of the following kinds:
 * `list` where the first element indicates a routine and the rest of elements are names of its parameters (if any) 
-	* the first element is either *"routine_name"* or *["module_name", "routine_name"]* where "routine_name" is the name of the function, and "module_name" is the name of the module if the function is defined in it
+	* the first element is *"routine_name"* in the same format as for routine selection parameters
 
 * *{"_cached": [list of cached routines]}* OR *{"_non_cached": [list of non-cached routines]}*
 
