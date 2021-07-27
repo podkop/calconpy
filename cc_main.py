@@ -133,7 +133,8 @@ def _yes_no_dict(l,l_yes,l_no):
         dct.update({ki: True for ki in l_yes})
     else:
         dct = {ki:True for ki in l}
-        dct.update({ki: False for ki in l_no})
+        if l_no is not None:
+            dct.update({ki: False for ki in l_no})
     return dct
 
 ## Calculates unique hash for a string, returns str
@@ -343,7 +344,7 @@ class calcon:
         self._s_cached_folder = [None for _ in range(n)]
         self._s_cached_path = [None for _ in range(n)]
         # Shortening for invariant set
-        invar_set = set(config.get(pname_invar,[]))
+        invar_set = set(_force_list(config.get(pname_invar,[])))
         for i,isp in enumerate(self._seq): # isp is parents of step (#i)
             step_name = self._s_names[i]
             # Creating supplementary step information
